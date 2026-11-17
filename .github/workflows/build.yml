@@ -1,0 +1,52 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Package QR Scan
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK (Temurin 17)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress
+
+      - name: Build JAR package with Maven
+        run: mvn clean verify
+
+      - name: Build Standalone App & Inno Setup Installer
+        shell: powershell
+        run: .\packaging\build-installer.ps1
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QRScan-Setup-Windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Create Release on GitHub
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true

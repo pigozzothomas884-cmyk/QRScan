@@ -1,0 +1,22 @@
+# Build outputs
+target/
+dist/
+*.class
+
+# Inno Setup output
+Output/
+*.tmp
+
+# IDE / Editor configuration
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS specific files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.log
