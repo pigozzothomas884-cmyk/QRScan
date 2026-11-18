@@ -186,7 +186,6 @@ if ($wixFound) {
             --icon $iconPath `
             --win-menu `
             --win-shortcut `
-            --win-dir-chooser `
             --win-per-user-install
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Pacchetto MSI generato con successo in $outputDirectory" -ForegroundColor Green
