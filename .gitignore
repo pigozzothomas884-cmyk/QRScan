@@ -3,6 +3,10 @@ target/
 dist/
 *.class
 
+# Certificates
+*.cer
+*.pfx
+
 # Inno Setup output
 Output/
 *.tmp
