@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$JavaHome = $env:JAVA_HOME
 )
 
@@ -12,20 +12,6 @@ $appIconPath = Join-Path $projectRoot 'target\QRScanApp.ico'
 $appImageInput = Join-Path $projectRoot 'target\jpackage-input'
 $appImageOutput = Join-Path $projectRoot 'target\installer-app'
 $signScript = Join-Path $PSScriptRoot 'sign-file.ps1'
-$signToolCmd = Join-Path $PSScriptRoot 'sign-tool.cmd'
-
-if (-not (Test-Path -LiteralPath $signToolCmd)) {
-    '@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0sign-file.ps1" %1' | Set-Content -LiteralPath $signToolCmd -Encoding ASCII
-}
-
-$installerScriptCandidates = @(
-    (Join-Path $projectRoot 'installer\QRScan.iss'),
-    (Join-Path $projectRoot 'installer\ATomixQRScan.iss')
-)
-$installerScript = $installerScriptCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-if (-not $installerScript) {
-    throw "Script Inno Setup non trovato in installer\"
-}
 
 if ([string]::IsNullOrWhiteSpace($JavaHome)) {
     $jpackageCommand = Get-Command jpackage.exe -ErrorAction SilentlyContinue
@@ -89,22 +75,6 @@ try {
     $iconStream.Dispose()
 }
 
-$innoCompilerCandidates = @(
-    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
-    (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
-)
-$innoCompilerCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-$innoCompiler = if ($innoCompilerCommand) { $innoCompilerCommand.Source } else { $null }
-if (-not $innoCompiler) {
-    $innoCompiler = $innoCompilerCandidates |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) } |
-        Select-Object -First 1
-}
-if (-not $innoCompiler) {
-    throw 'Inno Setup 6 non è installato. Installa Inno Setup 6 per creare il file di setup .exe.'
-}
-
 $outputDirectory = Join-Path $projectRoot 'dist'
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
@@ -119,6 +89,8 @@ if (Test-Path -LiteralPath $appImage) {
     Remove-Item -LiteralPath $appImage -Recurse -Force
 }
 
+# 1. Creazione dell'app-image standalone
+Write-Host "Creazione dell'app standalone con jpackage..." -ForegroundColor Cyan
 try {
     Push-Location $projectRoot
     & $jpackagePath `
@@ -159,7 +131,7 @@ if (-not (Test-Path -LiteralPath $jimageRuntimePath) -or (Get-Item -LiteralPath 
     throw "Il runtime JDK generato non contiene un jimage.dll valido: $jimageRuntimePath"
 }
 
-# Rimuove l'attributo di sola lettura dai file generati per evitare problemi di permessi con Windows
+# Rimuove l'attributo di sola lettura dai file generati
 Get-ChildItem -LiteralPath $appImage -Recurse | ForEach-Object {
     if (-not $_.PSIsContainer -and $_.IsReadOnly) {
         $_.IsReadOnly = $false
@@ -168,37 +140,70 @@ Get-ChildItem -LiteralPath $appImage -Recurse | ForEach-Object {
 
 # Firma digitale per l'eseguibile dell'app
 if (Test-Path -LiteralPath $signScript) {
-    Write-Host "Firma digitale del launcher dell'applicazione ($imageExecutable)..." -ForegroundColor Cyan
+    Write-Host "Firma digitale del launcher ($imageExecutable)..." -ForegroundColor Cyan
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $signScript $imageExecutable
 }
 
-# Compilazione installer con Inno Setup e firma automatica
-Push-Location (Split-Path -Parent $installerScript)
-try {
-    $innoArgs = @('/Qp')
-    if (Test-Path -LiteralPath $signToolCmd) {
-        $innoArgs += '/DUseSignTool'
-        $innoArgs += "/Sciaodev_sign=$signToolCmd `$f"
-    }
-    $innoArgs += (Split-Path $installerScript -Leaf)
+# 2. Creazione della versione Portable (.zip)
+$portableZipPath = Join-Path $outputDirectory "QRScan-Portable-$appVersion.zip"
+Write-Host "Creazione pacchetto Portable ZIP ($portableZipPath)..." -ForegroundColor Cyan
+if (Test-Path -LiteralPath $portableZipPath) {
+    Remove-Item -LiteralPath $portableZipPath -Force
+}
+Compress-Archive -Path "$appImage" -DestinationPath $portableZipPath -Force
+Write-Host "Pacchetto Portable ZIP pronto: $portableZipPath" -ForegroundColor Green
 
-    & $innoCompiler @innoArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Inno Setup non è riuscito a creare l'installer (codice $LASTEXITCODE)."
+# 3. Creazione del pacchetto nativo Windows Installer (.msi) con jpackage
+Write-Host "Creazione pacchetto nativo Windows Installer (.msi)..." -ForegroundColor Cyan
+$wixFound = (Get-Command candle.exe, light.exe -ErrorAction SilentlyContinue)
+if (-not $wixFound) {
+    # Cerca nelle posizioni standard di WiX Toolset
+    $wixPaths = @(
+        'C:\Program Files (x86)\WiX Toolset v3.11\bin',
+        'C:\Program Files\WiX Toolset v3.11\bin',
+        (Join-Path $env:LOCALAPPDATA 'Programs\WiX Toolset v3.11\bin')
+    )
+    foreach ($wp in $wixPaths) {
+        if (Test-Path $wp) {
+            $env:PATH = "$wp;$env:PATH"
+            $wixFound = $true
+            break
+        }
     }
-} finally {
-    Pop-Location
 }
 
-$setupPath = Join-Path $outputDirectory "QRScan-Setup-$appVersion.exe"
-if (-not (Test-Path -LiteralPath $setupPath)) {
-    throw "Installer .exe non generato: $setupPath"
+if ($wixFound) {
+    try {
+        Push-Location $projectRoot
+        & $jpackagePath `
+            --type msi `
+            --app-image $appImage `
+            --dest $outputDirectory `
+            --name 'QR Scan' `
+            --app-version $appVersion `
+            --vendor 'CiaoDev' `
+            --description 'Generatore e lettore di codici QR' `
+            --win-menu `
+            --win-shortcut `
+            --win-dir-chooser `
+            --win-per-user-install
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Pacchetto MSI generato con successo in $outputDirectory" -ForegroundColor Green
+            $msiFile = Get-ChildItem -Path $outputDirectory -Filter "*.msi" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($msiFile -and (Test-Path -LiteralPath $signScript)) {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $signScript $msiFile.FullName
+            }
+        } else {
+            Write-Warning "jpackage MSI ha restituito il codice $LASTEXITCODE."
+        }
+    } catch {
+        Write-Warning "Impossibile generare l'MSI: $_"
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Host "WiX Toolset non presente in locale (l'MSI verra' generato su GitHub Actions dove WiX e' preinstallato)." -ForegroundColor Yellow
 }
 
-# Rimuove l'attributo di sola lettura e Mark-of-the-Web
-Set-ItemProperty -LiteralPath $setupPath -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
-Unblock-File -LiteralPath $setupPath -ErrorAction SilentlyContinue
-
-Write-Host "Installer pronto: $setupPath" -ForegroundColor Green
-Get-Item -LiteralPath $setupPath | Select-Object Name, Length, LastWriteTime
-Get-AuthenticodeSignature -FilePath $setupPath | Format-List Status, StatusMessage, SignerCertificate
+Write-Host "Build completata con successo!" -ForegroundColor Green
+Get-ChildItem -LiteralPath $outputDirectory | Select-Object Name, Length, LastWriteTime
