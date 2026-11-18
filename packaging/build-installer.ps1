@@ -183,6 +183,7 @@ if ($wixFound) {
             --app-version $appVersion `
             --vendor 'CiaoDev' `
             --description 'Generatore e lettore di codici QR' `
+            --icon $iconPath `
             --win-menu `
             --win-shortcut `
             --win-dir-chooser `
